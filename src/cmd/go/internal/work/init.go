@@ -37,7 +37,7 @@ func BuildInit() {
 	instrumentInit()
 	buildModeInit()
 	if err := fsys.Init(base.Cwd()); err != nil {
-		base.Fatalf("go: %v", err)
+		base.Fatal(err)
 	}
 
 	// Make sure -pkgdir is absolute, because we run commands
@@ -84,11 +84,9 @@ func BuildInit() {
 	if cfg.BuildRace && cfg.BuildCoverMode != "atomic" {
 		base.Fatalf(`-covermode must be "atomic", not %q, when -race is enabled`, cfg.BuildCoverMode)
 	}
-
-	setPGOProfilePath()
 }
 
-// fuzzInstrumentFlags returns compiler flags that enable fuzzing instrumation
+// fuzzInstrumentFlags returns compiler flags that enable fuzzing instrumentation
 // on supported platforms.
 //
 // On unsupported platforms, fuzzInstrumentFlags returns nil, meaning no
@@ -162,7 +160,9 @@ func instrumentInit() {
 	}
 	modeFlag := "-" + mode
 
-	if !cfg.BuildContext.CgoEnabled {
+	// Check that cgo is enabled.
+	// Note: On macOS, -race does not require cgo. -asan and -msan still do.
+	if !cfg.BuildContext.CgoEnabled && (cfg.Goos != "darwin" || cfg.BuildASan || cfg.BuildMSan) {
 		if runtime.GOOS != cfg.Goos || runtime.GOARCH != cfg.Goarch {
 			fmt.Fprintf(os.Stderr, "go: %s requires cgo\n", modeFlag)
 		} else {
@@ -229,30 +229,12 @@ func buildModeInit() {
 		}
 		ldBuildmode = "c-shared"
 	case "default":
-		switch cfg.Goos {
-		case "android":
-			codegenArg = "-shared"
+		ldBuildmode = "exe"
+		if platform.DefaultPIE(cfg.Goos, cfg.Goarch, cfg.BuildRace) {
 			ldBuildmode = "pie"
-		case "windows":
-			if cfg.BuildRace {
-				ldBuildmode = "exe"
-			} else {
-				ldBuildmode = "pie"
-			}
-		case "ios":
-			codegenArg = "-shared"
-			ldBuildmode = "pie"
-		case "darwin":
-			switch cfg.Goarch {
-			case "arm64":
+			if cfg.Goos != "windows" && !gccgo {
 				codegenArg = "-shared"
 			}
-			fallthrough
-		default:
-			ldBuildmode = "exe"
-		}
-		if gccgo {
-			codegenArg = ""
 		}
 	case "exe":
 		pkgsFilter = pkgsMain
@@ -264,8 +246,8 @@ func buildModeInit() {
 			pkgsFilter = oneMainPkg
 		}
 	case "pie":
-		if cfg.BuildRace {
-			base.Fatalf("-buildmode=pie not supported when -race is enabled")
+		if cfg.BuildRace && !platform.DefaultPIE(cfg.Goos, cfg.Goarch, cfg.BuildRace) {
+			base.Fatalf("-buildmode=pie not supported when -race is enabled on %s/%s", cfg.Goos, cfg.Goarch)
 		}
 		if gccgo {
 			codegenArg = "-fPIE"
@@ -301,7 +283,7 @@ func buildModeInit() {
 		base.Fatalf("buildmode=%s not supported", cfg.BuildBuildmode)
 	}
 
-	if !platform.BuildModeSupported(cfg.BuildToolchainName, cfg.BuildBuildmode, cfg.Goos, cfg.Goarch) {
+	if cfg.BuildBuildmode != "default" && !platform.BuildModeSupported(cfg.BuildToolchainName, cfg.BuildBuildmode, cfg.Goos, cfg.Goarch) {
 		base.Fatalf("-buildmode=%s not supported on %s/%s\n", cfg.BuildBuildmode, cfg.Goos, cfg.Goarch)
 	}
 
@@ -414,7 +396,7 @@ func compilerVersion() (version, error) {
 }
 
 // compilerRequiredAsanVersion is a copy of the function defined in
-// misc/cgo/testsanitizers/cc_test.go
+// cmd/cgo/internal/testsanitizers/cc_test.go
 // compilerRequiredAsanVersion reports whether the compiler is the version
 // required by Asan.
 func compilerRequiredAsanVersion() error {
@@ -439,22 +421,4 @@ func compilerRequiredAsanVersion() error {
 		return fmt.Errorf("-asan: C compiler is not gcc or clang")
 	}
 	return nil
-}
-
-func setPGOProfilePath() {
-	switch cfg.BuildPGO {
-	case "":
-		fallthrough // default to "auto"
-	case "off":
-		// Nothing to do.
-	case "auto":
-		base.Fatalf("-pgo=auto is not implemented")
-	default:
-		// make it absolute path, as the compiler runs on various directories.
-		if p, err := filepath.Abs(cfg.BuildPGO); err != nil {
-			base.Fatalf("fail to get absolute path of PGO file %s: %v", cfg.BuildPGO, err)
-		} else {
-			cfg.BuildPGOFile = p
-		}
-	}
 }

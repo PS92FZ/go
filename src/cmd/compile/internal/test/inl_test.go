@@ -6,12 +6,10 @@ package test
 
 import (
 	"bufio"
-	"internal/buildcfg"
 	"internal/goexperiment"
 	"internal/testenv"
 	"io"
 	"math/bits"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
@@ -53,6 +51,7 @@ func TestIntendedInlining(t *testing.T) {
 			"getMCache",
 			"isDirectIface",
 			"itabHashFunc",
+			"nextslicecap",
 			"noescape",
 			"pcvalueCacheKey",
 			"readUnaligned32",
@@ -89,6 +88,8 @@ func TestIntendedInlining(t *testing.T) {
 			"(*mspan).markBitsForIndex",
 			"(*muintptr).set",
 			"(*puintptr).set",
+			"(*wbBuf).get1",
+			"(*wbBuf).get2",
 		},
 		"runtime/internal/sys": {},
 		"runtime/internal/math": {
@@ -123,6 +124,9 @@ func TestIntendedInlining(t *testing.T) {
 			"RuneLen",
 			"AppendRune",
 			"ValidRune",
+		},
+		"unicode/utf16": {
+			"Decode",
 		},
 		"reflect": {
 			"Value.Bool",
@@ -177,6 +181,15 @@ func TestIntendedInlining(t *testing.T) {
 		"net": {
 			"(*UDPConn).ReadFromUDP",
 		},
+		"sync": {
+			// Both OnceFunc and its returned closure need to be inlinable so
+			// that the returned closure can be inlined into the caller of OnceFunc.
+			"OnceFunc",
+			"OnceFunc.func2", // The returned closure.
+			// TODO(austin): It would be good to check OnceValue and OnceValues,
+			// too, but currently they aren't reported because they have type
+			// parameters and aren't instantiated in sync.
+		},
 		"sync/atomic": {
 			// (*Bool).CompareAndSwap handled below.
 			"(*Bool).Load",
@@ -207,7 +220,10 @@ func TestIntendedInlining(t *testing.T) {
 			"(*Uintptr).Load",
 			"(*Uintptr).Store",
 			"(*Uintptr).Swap",
-			// (*Pointer[T])'s methods' handled below.
+			"(*Pointer[go.shape.int]).CompareAndSwap",
+			"(*Pointer[go.shape.int]).Load",
+			"(*Pointer[go.shape.int]).Store",
+			"(*Pointer[go.shape.int]).Swap",
 		},
 	}
 
@@ -232,14 +248,6 @@ func TestIntendedInlining(t *testing.T) {
 		want["runtime"] = append(want["runtime"], "mix")
 		// (*Bool).CompareAndSwap is just over budget on 32-bit systems (386, arm).
 		want["sync/atomic"] = append(want["sync/atomic"], "(*Bool).CompareAndSwap")
-	}
-	if buildcfg.Experiment.Unified {
-		// Non-unified IR does not report "inlining call ..." for atomic.Pointer[T]'s methods.
-		// TODO(cuonglm): remove once non-unified IR frontend gone.
-		want["sync/atomic"] = append(want["sync/atomic"], "(*Pointer[go.shape.int]).CompareAndSwap")
-		want["sync/atomic"] = append(want["sync/atomic"], "(*Pointer[go.shape.int]).Load")
-		want["sync/atomic"] = append(want["sync/atomic"], "(*Pointer[go.shape.int]).Store")
-		want["sync/atomic"] = append(want["sync/atomic"], "(*Pointer[go.shape.int]).Swap")
 	}
 
 	switch runtime.GOARCH {
@@ -279,7 +287,7 @@ func TestIntendedInlining(t *testing.T) {
 	}
 
 	args := append([]string{"build", "-gcflags=-m -m", "-tags=math_big_pure_go"}, pkgs...)
-	cmd := testenv.CleanCmdEnv(exec.Command(testenv.GoToolPath(t), args...))
+	cmd := testenv.CleanCmdEnv(testenv.Command(t, testenv.GoToolPath(t), args...))
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
@@ -362,7 +370,7 @@ func TestIssue56044(t *testing.T) {
 	for _, mode := range modes {
 		// Build the Go runtime with "-m", capturing output.
 		args := []string{"build", "-gcflags=runtime=-m", "runtime"}
-		cmd := exec.Command(testenv.GoToolPath(t), args...)
+		cmd := testenv.Command(t, testenv.GoToolPath(t), args...)
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("build failed (%v): %s", err, b)
@@ -371,7 +379,7 @@ func TestIssue56044(t *testing.T) {
 
 		// Redo the build with -cover, also with "-m".
 		args = []string{"build", "-gcflags=runtime=-m", mode, "runtime"}
-		cmd = exec.Command(testenv.GoToolPath(t), args...)
+		cmd = testenv.Command(t, testenv.GoToolPath(t), args...)
 		b, err = cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("build failed (%v): %s", err, b)

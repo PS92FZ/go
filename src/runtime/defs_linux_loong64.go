@@ -24,6 +24,7 @@ const (
 	_MADV_FREE       = 0x8
 	_MADV_HUGEPAGE   = 0xe
 	_MADV_NOHUGEPAGE = 0xf
+	_MADV_COLLAPSE   = 0x19
 
 	_SA_RESTART  = 0x10000000
 	_SA_ONSTACK  = 0x8000000
@@ -137,6 +138,9 @@ type sigevent struct {
 
 const (
 	_O_RDONLY   = 0x0
+	_O_WRONLY   = 0x1
+	_O_CREAT    = 0x40
+	_O_TRUNC    = 0x200
 	_O_NONBLOCK = 0x800
 	_O_CLOEXEC  = 0x80000
 )

@@ -39,12 +39,13 @@ import (
 var depsRules = `
 	# No dependencies allowed for any of these packages.
 	NONE
-	< constraints, container/list, container/ring,
+	< cmp, container/list, container/ring,
 	  internal/cfg, internal/coverage, internal/coverage/rtcov,
 	  internal/coverage/uleb128, internal/coverage/calloc,
-	  internal/cpu, internal/goarch,
+	  internal/cpu, internal/goarch, internal/godebugs,
 	  internal/goexperiment, internal/goos,
 	  internal/goversion, internal/nettrace, internal/platform,
+	  log/internal,
 	  unicode/utf8, unicode/utf16, unicode,
 	  unsafe;
 
@@ -52,13 +53,12 @@ var depsRules = `
 	internal/goarch, unsafe
 	< internal/abi;
 
-	unsafe
-	< internal/godebug;
+	unsafe < maps;
 
 	# RUNTIME is the core runtime group of packages, all of them very light-weight.
 	internal/abi, internal/cpu, internal/goarch,
-	internal/coverage/rtcov, internal/goexperiment,
-	internal/goos, internal/godebug, unsafe
+	internal/coverage/rtcov, internal/godebugs, internal/goexperiment,
+	internal/goos, unsafe
 	< internal/bytealg
 	< internal/itoa
 	< internal/unsafeheader
@@ -70,13 +70,22 @@ var depsRules = `
 	< sync/atomic
 	< internal/race
 	< sync
+	< internal/bisect
+	< internal/godebug
 	< internal/reflectlite
 	< errors
 	< internal/oserror, math/bits
 	< RUNTIME;
 
-	RUNTIME
-	< sort
+	# slices depends on unsafe for overlapping check, cmp for comparison
+	# semantics, and math/bits for # calculating bitlength of numbers.
+	unsafe, cmp, math/bits
+	< slices;
+
+	RUNTIME, slices
+	< sort;
+
+	sort
 	< container/heap;
 
 	RUNTIME
@@ -146,6 +155,7 @@ var depsRules = `
 	io/fs
 	< internal/testlog
 	< internal/poll
+	< internal/safefilepath
 	< os
 	< os/signal;
 
@@ -200,7 +210,7 @@ var depsRules = `
 
 	# encodings
 	# core ones do not use fmt.
-	io, strconv
+	io, strconv, slices
 	< encoding;
 
 	encoding, reflect
@@ -218,7 +228,7 @@ var depsRules = `
 	# hashes
 	io
 	< hash
-	< hash/adler32, hash/crc32, hash/crc64, hash/fnv, hash/maphash;
+	< hash/adler32, hash/crc32, hash/crc64, hash/fnv;
 
 	# math/big
 	FMT, encoding/binary, math/rand
@@ -226,7 +236,7 @@ var depsRules = `
 
 	# compression
 	FMT, encoding/binary, hash/adler32, hash/crc32
-	< compress/bzip2, compress/flate, compress/lzw
+	< compress/bzip2, compress/flate, compress/lzw, internal/zstd
 	< archive/zip, compress/gzip, compress/zlib;
 
 	# templates
@@ -237,21 +247,21 @@ var depsRules = `
 	< text/template
 	< internal/lazytemplate;
 
-	encoding/json, html, text/template
-	< html/template;
-
 	# regexp
 	FMT
 	< regexp/syntax
 	< regexp
 	< internal/lazyregexp;
 
+	encoding/json, html, text/template, regexp
+	< html/template;
+
 	# suffix array
 	encoding/binary, regexp
 	< index/suffixarray;
 
 	# executable parsing
-	FMT, encoding/binary, compress/zlib, internal/saferio
+	FMT, encoding/binary, compress/zlib, internal/saferio, internal/zstd
 	< runtime/debug
 	< debug/dwarf
 	< debug/elf, debug/gosym, debug/macho, debug/pe, debug/plan9obj, internal/xcoff
@@ -263,29 +273,36 @@ var depsRules = `
 	< go/token
 	< go/scanner
 	< go/ast
-	< go/internal/typeparams
-	< go/parser;
+	< go/internal/typeparams;
 
 	FMT
 	< go/build/constraint, go/doc/comment;
 
-	go/build/constraint, go/doc/comment, go/parser, text/tabwriter
+	go/internal/typeparams, go/build/constraint
+	< go/parser;
+
+	go/doc/comment, go/parser, text/tabwriter
 	< go/printer
 	< go/format;
-
-	go/doc/comment, go/parser, internal/lazyregexp, text/template
-	< go/doc;
 
 	math/big, go/token
 	< go/constant;
 
-	container/heap, go/constant, go/parser, internal/types/errors, regexp
-	< go/types;
-
 	FMT, internal/goexperiment
 	< internal/buildcfg;
 
-	go/build/constraint, go/doc, go/parser, internal/buildcfg, internal/goroot, internal/goversion
+	container/heap, go/constant, go/parser, internal/buildcfg, internal/goversion, internal/types/errors
+	< go/types;
+
+	# The vast majority of standard library packages should not be resorting to regexp.
+	# go/types is a good chokepoint. It shouldn't use regexp, nor should anything
+	# that is low-enough level to be used by go/types.
+	regexp !< go/types;
+
+	go/doc/comment, go/parser, internal/lazyregexp, text/template
+	< go/doc;
+
+	go/build/constraint, go/doc, go/parser, internal/buildcfg, internal/goroot, internal/goversion, internal/platform
 	< go/build;
 
 	# databases
@@ -318,7 +335,7 @@ var depsRules = `
 
 	# Bulk of the standard library must not use cgo.
 	# The prohibition stops at net and os/user.
-	C !< fmt, go/types, CRYPTO-MATH;
+	C !< fmt, go/types, CRYPTO-MATH, log/slog;
 
 	CGO, OS
 	< plugin;
@@ -370,13 +387,24 @@ var depsRules = `
 	< NET;
 
 	# logging - most packages should not import; http and up is allowed
-	FMT
+	FMT, log/internal
 	< log;
 
-	log !< crypto/tls, database/sql, go/importer, testing;
+	log, log/slog !< crypto/tls, database/sql, go/importer, testing;
 
 	FMT, log, net
 	< log/syslog;
+
+	RUNTIME
+	< log/slog/internal, log/slog/internal/buffer;
+
+	FMT,
+	encoding, encoding/json,
+	log, log/internal,
+	log/slog/internal, log/slog/internal/buffer,
+	slices
+	< log/slog
+	< log/slog/internal/slogtest, log/slog/internal/benchmarks;
 
 	NET, log
 	< net/mail;
@@ -395,19 +423,37 @@ var depsRules = `
 	< crypto
 	< crypto/subtle
 	< crypto/internal/alias
-	< crypto/internal/randutil
-	< crypto/internal/nistec/fiat
-	< crypto/internal/nistec
-	< crypto/internal/edwards25519/field
-	< crypto/internal/edwards25519, crypto/ecdh
 	< crypto/cipher;
 
 	crypto/cipher,
 	crypto/internal/boring/bcache
 	< crypto/internal/boring
-	< crypto/boring
+	< crypto/boring;
+
+	crypto/internal/alias
+	< crypto/internal/randutil
+	< crypto/internal/nistec/fiat
+	< crypto/internal/nistec
+	< crypto/internal/edwards25519/field
+	< crypto/internal/edwards25519;
+
+	crypto/boring
 	< crypto/aes, crypto/des, crypto/hmac, crypto/md5, crypto/rc4,
-	  crypto/sha1, crypto/sha256, crypto/sha512
+	  crypto/sha1, crypto/sha256, crypto/sha512;
+
+	crypto/boring, crypto/internal/edwards25519/field
+	< crypto/ecdh;
+
+	crypto/aes,
+	crypto/des,
+	crypto/ecdh,
+	crypto/hmac,
+	crypto/internal/edwards25519,
+	crypto/md5,
+	crypto/rc4,
+	crypto/sha1,
+	crypto/sha256,
+	crypto/sha512
 	< CRYPTO;
 
 	CGO, fmt, net !< CRYPTO;
@@ -420,6 +466,7 @@ var depsRules = `
 	< encoding/asn1
 	< golang.org/x/crypto/cryptobyte/asn1
 	< golang.org/x/crypto/cryptobyte
+	< crypto/internal/bigmod
 	< crypto/dsa, crypto/elliptic, crypto/rsa
 	< crypto/ecdsa
 	< CRYPTO-MATH;
@@ -453,6 +500,9 @@ var depsRules = `
 
 	crypto/tls
 	< net/smtp;
+
+	crypto/rand
+	< hash/maphash; # for purego implementation
 
 	# HTTP, King of Dependencies.
 
@@ -502,7 +552,7 @@ var depsRules = `
 	FMT, compress/gzip, encoding/binary, text/tabwriter
 	< runtime/pprof;
 
-	OS, compress/gzip, regexp
+	OS, compress/gzip, internal/lazyregexp
 	< internal/profile;
 
 	html, internal/profile, net/http, runtime/pprof, runtime/trace
@@ -514,7 +564,7 @@ var depsRules = `
 	< net/rpc/jsonrpc;
 
 	# System Information
-	internal/cpu, sync
+	bufio, bytes, internal/cpu, io, os, strings, sync
 	< internal/sysinfo;
 
 	# Test-only
@@ -527,6 +577,9 @@ var depsRules = `
 
 	FMT, DEBUG, flag, runtime/trace, internal/sysinfo, math/rand
 	< testing;
+
+	log/slog, testing
+	< testing/slogtest;
 
 	FMT, crypto/sha256, encoding/json, go/ast, go/parser, go/token,
 	internal/godebug, math/rand, encoding/hex, crypto/sha256
@@ -542,7 +595,7 @@ var depsRules = `
 	< internal/obscuretestdata;
 
 	CGO, OS, fmt
-	< os/signal/internal/pty;
+	< internal/testpty;
 
 	NET, testing, math/rand
 	< golang.org/x/net/nettest;
@@ -571,6 +624,7 @@ var depsRules = `
 	internal/coverage/cmerge
 	< internal/coverage/cformat;
 
+    encoding/json,
 	runtime/debug,
 	internal/coverage/calloc,
 	internal/coverage/cformat,
